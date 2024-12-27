@@ -94,6 +94,68 @@ func (c *Client) Rpc(name, count string, rpcBody interface{}) string {
 	return c.rest.Rpc(name, count, rpcBody)
 }
 
+// SignUp registers a new user with email and password.
+// Optionally accepts user metadata.
+func (c *Client) SignUp(email, password string, data map[string]interface{}) (*types.SignupResponse, error) {
+	req := types.SignupRequest{
+		Email:    email,
+		Password: password,
+		Data:     data, // Optional user metadata
+	}
+
+	resp, err := c.Auth.Signup(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// If autoconfirm is enabled, update the client's auth session
+	if resp.Session.AccessToken != "" {
+		c.UpdateAuthSession(resp.Session)
+	}
+
+	return resp, nil
+}
+
+type SignUpOptions struct {
+	Data       map[string]interface{}
+	RedirectTo string
+}
+
+// SignUpWithEmailOTP initiates a signup flow using email OTP verification.
+// It sends a one-time password to the user's email.
+func (c *Client) SignUpWithEmailOTP(email string, options *SignUpOptions) error {
+	if options == nil {
+		options = &SignUpOptions{}
+	}
+
+	req := types.OTPRequest{
+		Email:      email,
+		CreateUser: true,         // This creates a new user after verification
+		Data:       options.Data, // Optional metadata for the new user
+	}
+
+	return c.Auth.OTP(req)
+}
+
+// VerifyEmailOTP completes the signup process by verifying the OTP code.
+// Returns the new user session if verification is successful.
+func (c *Client) VerifyEmailOTP(email, code string) (*types.Session, error) {
+	req := types.VerifyForUserRequest{
+		Type:  types.VerificationTypeSignup,
+		Email: email,
+		Token: code,
+	}
+
+	resp, err := c.Auth.VerifyForUser(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update client session with the new tokens
+	c.UpdateAuthSession(resp.Session)
+	return &resp.Session, nil
+}
+
 func (c *Client) SignInWithEmailPassword(email, password string) (types.Session, error) {
 	token, err := c.Auth.SignInWithEmailPassword(email, password)
 	if err != nil {
@@ -111,6 +173,36 @@ func (c *Client) SignInWithPhonePassword(phone, password string) (types.Session,
 	}
 	c.UpdateAuthSession(token.Session)
 	return token.Session, err
+}
+
+// SignInWithProvider initiates OAuth sign-in with the specified provider.
+// It returns the authorization URL that the user should be redirected to,
+// along with the PKCE verifier that should be stored for the token exchange.
+func (c *Client) SignInWithProvider(provider types.Provider, redirectTo string) (*types.AuthorizeResponse, error) {
+	req := types.AuthorizeRequest{
+		Provider:   provider,
+		RedirectTo: redirectTo,
+		FlowType:   types.FlowPKCE, // Use PKCE flow for better security
+		Scopes:     "",             // Use default scopes
+	}
+
+	return c.Auth.Authorize(req)
+}
+
+// ExchangeCode exchanges the authorization code for a session token after OAuth sign-in.
+// The codeVerifier is the PKCE verifier returned from SignInWithProvider.
+func (c *Client) ExchangeCode(code, codeVerifier string) (types.Session, error) {
+	token, err := c.Auth.Token(types.TokenRequest{
+		GrantType:    "pkce",
+		Code:         code,
+		CodeVerifier: codeVerifier,
+	})
+	if err != nil {
+		return types.Session{}, err
+	}
+
+	c.UpdateAuthSession(token.Session)
+	return token.Session, nil
 }
 
 func (c *Client) EnableTokenAutoRefresh(session types.Session) {
