@@ -2,6 +2,7 @@ package supabase
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -39,10 +40,11 @@ type ClientOptions struct {
 	Schema  string
 }
 
-// NewClient creates a new Supabase client.
-// url is the Supabase URL.
-// key is the Supabase API key.
-// options is the Supabase client options.
+type SignUpOptions struct {
+	Data       map[string]interface{}
+	RedirectTo string
+}
+
 func NewClient(url, key string, options *ClientOptions) (*Client, error) {
 
 	if url == "" || key == "" {
@@ -62,7 +64,6 @@ func NewClient(url, key string, options *ClientOptions) (*Client, error) {
 
 	client := &Client{}
 	client.options.url = url
-	// map is pass by reference, so this gets updated by rest of function
 	client.options.headers = headers
 
 	var schema string
@@ -74,7 +75,6 @@ func NewClient(url, key string, options *ClientOptions) (*Client, error) {
 
 	client.rest = postgrest.NewClient(url+REST_URL, schema, headers)
 	client.Storage = storage_go.NewClient(url+STORAGE_URL, key, headers)
-	// ugly to make auth client use custom URL
 	tmp := auth.New(url, key)
 	client.Auth = tmp.WithCustomAuthURL(url + AUTH_URL)
 	client.Functions = functions.NewClient(url+FUNCTIONS_URL, key, headers)
@@ -82,20 +82,19 @@ func NewClient(url, key string, options *ClientOptions) (*Client, error) {
 	return client, nil
 }
 
-// Wrap postgrest From method
-// From returns a QueryBuilder for the specified table.
+func (c *Client) HealthCheck() (*types.HealthCheckResponse, error) {
+	return c.Auth.HealthCheck()
+}
+
 func (c *Client) From(table string) *postgrest.QueryBuilder {
 	return c.rest.From(table)
 }
 
-// Wrap postgrest Rpc method
-// Rpc returns a string for the specified function.
 func (c *Client) Rpc(name, count string, rpcBody interface{}) string {
 	return c.rest.Rpc(name, count, rpcBody)
 }
 
-// SignUp registers a new user with email and password.
-// Optionally accepts user metadata.
+// ---------------------------- Auth Functions ---------------------------- //
 func (c *Client) SignUp(email, password string, data map[string]interface{}) (*types.SignupResponse, error) {
 	req := types.SignupRequest{
 		Email:    email,
@@ -116,13 +115,6 @@ func (c *Client) SignUp(email, password string, data map[string]interface{}) (*t
 	return resp, nil
 }
 
-type SignUpOptions struct {
-	Data       map[string]interface{}
-	RedirectTo string
-}
-
-// SignUpWithEmailOTP initiates a signup flow using email OTP verification.
-// It sends a one-time password to the user's email.
 func (c *Client) SignUpWithEmailOTP(email string, options *SignUpOptions) error {
 	if options == nil {
 		options = &SignUpOptions{}
@@ -137,8 +129,6 @@ func (c *Client) SignUpWithEmailOTP(email string, options *SignUpOptions) error 
 	return c.Auth.OTP(req)
 }
 
-// VerifyEmailOTP completes the signup process by verifying the OTP code.
-// Returns the new user session if verification is successful.
 func (c *Client) VerifyEmailOTP(email, code string) (*types.Session, error) {
 	req := types.VerifyForUserRequest{
 		Type:  types.VerificationTypeSignup,
@@ -151,7 +141,6 @@ func (c *Client) VerifyEmailOTP(email, code string) (*types.Session, error) {
 		return nil, err
 	}
 
-	// Update client session with the new tokens
 	c.UpdateAuthSession(resp.Session)
 	return &resp.Session, nil
 }
@@ -175,9 +164,6 @@ func (c *Client) SignInWithPhonePassword(phone, password string) (types.Session,
 	return token.Session, err
 }
 
-// SignInWithProvider initiates OAuth sign-in with the specified provider.
-// It returns the authorization URL that the user should be redirected to,
-// along with the PKCE verifier that should be stored for the token exchange.
 func (c *Client) SignInWithProvider(provider types.Provider, redirectTo string) (*types.AuthorizeResponse, error) {
 	req := types.AuthorizeRequest{
 		Provider:   provider,
@@ -189,8 +175,6 @@ func (c *Client) SignInWithProvider(provider types.Provider, redirectTo string) 
 	return c.Auth.Authorize(req)
 }
 
-// ExchangeCode exchanges the authorization code for a session token after OAuth sign-in.
-// The codeVerifier is the PKCE verifier returned from SignInWithProvider.
 func (c *Client) ExchangeCode(code, codeVerifier string) (types.Session, error) {
 	token, err := c.Auth.Token(types.TokenRequest{
 		GrantType:    "pkce",
@@ -205,6 +189,17 @@ func (c *Client) ExchangeCode(code, codeVerifier string) (types.Session, error) 
 	return token.Session, nil
 }
 
+func (c *Client) Logout() error {
+	err := c.Auth.Logout()
+	if err != nil {
+		return err
+	}
+
+	c.UpdateAuthSession(types.Session{})
+	return nil
+}
+
+// ---------------------------- Session Management ---------------------------- //
 func (c *Client) EnableTokenAutoRefresh(session types.Session) {
 	go func() {
 		attempt := 0
@@ -216,7 +211,6 @@ func (c *Client) EnableTokenAutoRefresh(session types.Session) {
 				time.Sleep(sleepDuration)
 			}
 
-			// Refresh the token
 			newSession, err := c.RefreshToken(session.RefreshToken)
 			if err != nil {
 				attempt++
@@ -230,7 +224,7 @@ func (c *Client) EnableTokenAutoRefresh(session types.Session) {
 				continue
 			}
 
-			// Update the session, reset the attempt counter, and update the expiresAt time
+			// Update Session, Reset Attempt Counter, and Update the expiresAt time
 			c.UpdateAuthSession(newSession)
 			session = newSession
 			attempt = 0
@@ -255,4 +249,29 @@ func (c *Client) UpdateAuthSession(session types.Session) {
 	c.Storage = storage_go.NewClient(c.options.url+STORAGE_URL, session.AccessToken, c.options.headers)
 	c.Functions = functions.NewClient(c.options.url+FUNCTIONS_URL, session.AccessToken, c.options.headers)
 
+}
+
+// ---------------------------- User Functions ---------------------------- //
+func (c *Client) GetUser() (*types.UserResponse, error) {
+	return c.Auth.GetUser()
+}
+
+func (c *Client) UpdateUser(updates types.UpdateUserRequest) (*types.UpdateUserResponse, error) {
+	resp, err := c.Auth.UpdateUser(updates)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+func (c *Client) UpdatePassword(newPassword string) error {
+	_, err := c.Auth.UpdateUser(types.UpdateUserRequest{
+		Password: &newPassword,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update password: %w", err)
+	}
+
+	return nil
 }

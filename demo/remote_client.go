@@ -2,15 +2,15 @@
 // For now this example is represent wanted syntax and bindings for library.
 // After core development this test files will be used for CI tests.
 
-package main
+package demo
 
 import (
 	"fmt"
 	"log"
 	"os"
 
+	"github.com/antoineross/supabase-go"
 	"github.com/joho/godotenv"
-	"github.com/supabase-community/supabase-go"
 )
 
 func main() {
